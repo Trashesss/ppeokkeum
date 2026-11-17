@@ -84,7 +84,7 @@ function buildFish(s: FishShape): BufferGeometry {
     if (p && rel > -0.25) {
       const d = p.density ?? 1;
       if (p.kind === 'stripes' && rel > 0.1 && Math.sin(t * 46 * d + Math.sin(k * 1.9) * 2.4) > 0.15) c.copy(pat);
-      else if (p.kind === 'spots' && hash(id) < 0.2) c.copy(pat);
+      else if (p.kind === 'spots' && hash(id) < 0.2 * d) c.copy(pat);
       else if (p.kind === 'bars' && Math.sin(t * Math.PI * 7 * d) > 0.45) c.lerp(pat, 0.75);
       else if (p.kind === 'mottle' && hash(id) < 0.35) c.lerp(pat, 0.55);
       else if (p.kind === 'scales' && (id + Math.floor(t * 12)) % 2 === 0) c.lerp(pat, 0.25);
