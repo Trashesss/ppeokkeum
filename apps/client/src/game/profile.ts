@@ -46,6 +46,17 @@ const safeStorage: StateStorage = {
   },
 };
 
+const STORAGE_KEY = 'ppeokkeum-profile-v1';
+/** 이름을 바꾸기 전 키. 남아 있으면 한 번만 새 키로 옮겨 도감을 잃지 않게 한다 */
+const LEGACY_KEY = 'yunseul-profile-v1';
+try {
+  const legacy = localStorage.getItem(LEGACY_KEY);
+  if (legacy && !localStorage.getItem(STORAGE_KEY)) localStorage.setItem(STORAGE_KEY, legacy);
+  localStorage.removeItem(LEGACY_KEY);
+} catch {
+  /* 저장소를 쓸 수 없는 환경: 옮길 것도 없다 */
+}
+
 export const useProfile = create<Profile>()(
   persist(
     (set, get) => ({
@@ -72,7 +83,7 @@ export const useProfile = create<Profile>()(
       settle: (keep) => set((s) => (keep ? { kept: s.kept + 1 } : { released: s.released + 1 })),
     }),
     {
-      name: 'yunseul-profile-v1',
+      name: STORAGE_KEY,
       storage: createJSONStorage(() => safeStorage),
       partialize: ({ nickname, character, dex, total, kept, released }) => ({ nickname, character, dex, total, kept, released }),
     },

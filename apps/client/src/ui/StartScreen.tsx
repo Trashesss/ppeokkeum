@@ -30,7 +30,7 @@ export function StartScreen() {
           start();
         }}
       >
-        <h1>윤슬 낚시터</h1>
+        <h1>뻐끔뻐끔</h1>
         <p className="lead">물결이 반짝이는 작은 섬에서, 느긋하게 한 마리.</p>
         <label className="field">
           <span>닉네임</span>

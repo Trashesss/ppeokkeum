@@ -1,4 +1,4 @@
-# 윤슬 낚시터 (가제)
+# 뻐끔뻐끔
 
 여러 사람이 함께 머무는 저폴리 3D 낚시 힐링 광장. 요구사항은 [docs/requirements.md](docs/requirements.md).
 
