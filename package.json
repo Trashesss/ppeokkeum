@@ -1,0 +1,19 @@
+{
+  "name": "fishing-plaza",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @fishing/client",
+    "build": "npm run build -w @fishing/client",
+    "test": "vitest run",
+    "typecheck": "tsc -p packages/shared && tsc -p apps/client"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}
