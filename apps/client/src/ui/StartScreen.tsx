@@ -2,19 +2,20 @@ import { useState } from 'react';
 import { dayPhase } from '@fishing/shared';
 import { audio } from '../game/audio';
 import { clock } from '../game/clock';
-import { AVATAR_COLORS, useProfile } from '../game/profile';
+import { useProfile } from '../game/profile';
+import { CHARACTERS, CHARACTER_LABEL, type CharacterId } from '../scene/character/assets';
 import { useGame } from '../game/store';
 
 export function StartScreen() {
   const saved = useProfile();
   const [name, setName] = useState(saved.nickname);
-  const [color, setColor] = useState(saved.color);
+  const [character, setCharacter] = useState<CharacterId>(saved.character);
   const trimmed = name.trim();
   const valid = trimmed.length >= 2 && trimmed.length <= 12;
 
   const start = () => {
     if (!valid) return;
-    saved.setIdentity(trimmed, color);
+    saved.setIdentity(trimmed, character);
     audio.init(() => dayPhase(clock.tod()) === 'night');
     audio.setMuted(useGame.getState().muted);
     useGame.setState({ started: true });
@@ -36,17 +37,19 @@ export function StartScreen() {
           <input value={name} maxLength={12} placeholder="2~12자" autoFocus onChange={(e) => setName(e.target.value)} />
         </label>
         <div className="field">
-          <span>옷 색</span>
-          <div className="swatches">
-            {AVATAR_COLORS.map((c) => (
+          <span>캐릭터</span>
+          <div className="chips" role="radiogroup" aria-label="캐릭터">
+            {CHARACTERS.map((c) => (
               <button
                 type="button"
                 key={c}
-                className={c === color ? 'swatch on' : 'swatch'}
-                style={{ background: c }}
-                aria-label={`옷 색 ${c}`}
-                onClick={() => setColor(c)}
-              />
+                role="radio"
+                aria-checked={c === character}
+                className={c === character ? 'chip on' : 'chip'}
+                onClick={() => setCharacter(c)}
+              >
+                {CHARACTER_LABEL[c]}
+              </button>
             ))}
           </div>
         </div>

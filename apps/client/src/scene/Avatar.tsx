@@ -1,10 +1,13 @@
-import { useFrame } from '@react-three/fiber';
-import { useMemo, useRef } from 'react';
-import { CanvasTexture, SRGBColorSpace, type Group, type Object3D } from 'three';
+import { createPortal, useFrame } from '@react-three/fiber';
+import { Suspense, useEffect, useMemo, useRef } from 'react';
+import {
+  AnimationClip, AnimationMixer, CanvasTexture, LoopOnce, LoopRepeat, Matrix4, Quaternion, SRGBColorSpace, Vector3,
+  type AnimationAction, type Group, type Object3D,
+} from 'three';
 import { getSpecies } from '@fishing/shared';
-import { angleDamp } from '../game/angles';
 import { fishDisplayLength } from '../game/fx';
 import { carryStyle, type HeldFish, type Pose } from '../game/player';
+import { useCharacterModel, useClips, type CharacterId } from './character/assets';
 import { FishMesh, type FlopControl } from './fish/FishMesh';
 
 /** 아바타가 읽는 상태. 1단계에서 다른 플레이어도 같은 모양으로 동기화한다. */
@@ -15,220 +18,291 @@ export interface AvatarState {
   seat: unknown;
   hasRod: boolean;
   rodBend: number;
+  /** 물고기가 몸부림치는 중 (끌어올리기 애니메이션 전환) */
+  struggling: boolean;
   held: HeldFish | null;
 }
 
 interface Props {
   state: AvatarState;
+  character: CharacterId;
   /** 손에 든 물고기 종. 바뀔 때 다시 그리도록 prop 으로 받는다 */
   heldSpeciesId: string | null;
-  color: string;
   name: string;
   /** 낚싯대 끝 위치를 받을 객체 (낚싯줄 연결용) */
   rodTip?: Object3D;
 }
 
-const SKIN = '#f3d2b5';
-const PANTS = '#5a5f7a';
-const HAT = '#f0e2c0';
-const ARM_LEN = 0.52;
-const SHOULDER_Y = 1.2;
-const SHOULDER_X = 0.36;
-/** 낚싯대 마디별 휨 비율 (끝으로 갈수록 많이 휜다) */
+/** KayKit 캐릭터(약 2.2 단위)를 맵 비율(약 1.7m)에 맞춘다 */
+const SCALE = 0.78;
 const ROD_SEGS = [0.55, 0.55, 0.55, 0.55];
 const BEND_WEIGHT = [0.08, 0.18, 0.3, 0.44];
+/** 손잡이 끝이 손보다 조금 뒤에 오도록 */
+const ROD_GRIP_BACK = 0.35;
+/** 차징 동안 멈춰 둘 "젖힌 순간" (정규화 시각) */
+const CAST_WINDUP = 0.42;
+const THROW_WINDUP = 0.45;
+/**
+ * Sit_Chair_Idle 은 엉덩이를 발 기준 약 0.31m 뒤, 앉는 높이 약 0.35m 를 가정한다 (측정값).
+ * 벤치 좌석(0.5m) 가운데에 엉덩이가 오도록 앉을 때만 모델을 옮긴다.
+ */
+const SIT_FORWARD = 0.25;
+const SIT_LIFT = 0.15;
 
-const damp = (cur: number, target: number, k: number, dt: number) => cur + (target - cur) * (1 - Math.exp(-k * dt));
+/** 상체 뼈 (GLTFLoader 가 이름의 점을 지운다: upperarm.l → upperarml) */
+const UPPER = new Set(['spine', 'chest', 'head', 'upperarml', 'upperarmr', 'lowerarml', 'lowerarmr', 'wristl', 'wristr', 'handl', 'handr', 'handslotl', 'handslotr']);
+type Variant = 'full' | 'upper' | 'lower';
 
-/** 낚싯대가 뒤쪽 위 30도를 향하도록 팔을 머리 위로 젖힌 각도 (팔 기준 낚싯대 방향에서 역산) */
-const WINDUP = -2.92;
-/** 던진 직후 낚싯대가 수평보다 조금 위를 향하는 각도 */
-const FOLLOW_THROUGH = -0.75;
-
-interface ArmTarget {
-  aL: number;
-  aR: number;
-  /** 팔 벌림 (z 회전) */
-  sL: number;
-  sR: number;
-  lean: number;
-  bodyY: number;
+function maskClip(clip: AnimationClip, variant: Variant): AnimationClip {
+  if (variant === 'full') return clip;
+  const keepUpper = variant === 'upper';
+  const tracks = clip.tracks.filter((t) => UPPER.has(t.name.split('.')[0]!) === keepUpper);
+  return new AnimationClip(`${clip.name}:${variant}`, clip.duration, tracks);
 }
 
-function armsFor(state: AvatarState, walkSwing: number, now: number): ArmTarget {
-  const t: ArmTarget = { aL: -walkSwing * 0.8, aR: walkSwing * 0.8, sL: 0, sR: 0, lean: 0, bodyY: Math.sin(now / 700) * 0.015 };
-  const pt = state.poseTime;
+interface UpperSpec {
+  clip: string;
+  once?: boolean;
+  /** 이 시점(0~1)까지 재생하고 멈춘다 */
+  pauseAt?: number;
+}
+
+function upperFor(state: AvatarState): UpperSpec | null {
   const style = state.held ? carryStyle(state.held.tier) : 'one';
   switch (state.pose) {
     case 'charge':
-      Object.assign(t, { aR: WINDUP, aL: -0.6, lean: -0.12 });
-      break;
+      return { clip: 'Fishing_Cast', pauseAt: CAST_WINDUP };
     case 'cast':
-      Object.assign(t, { aR: pt < 0.3 ? FOLLOW_THROUGH : -0.9, aL: -0.5, lean: pt < 0.3 ? 0.14 : 0.04 });
-      break;
+      return { clip: 'Fishing_Cast', once: true };
     case 'hold':
-      Object.assign(t, { aR: -0.9, aL: -0.5 });
-      break;
+      return { clip: 'Fishing_Idle' };
+    case 'bite':
+      return { clip: 'Fishing_Bite' };
     case 'reel':
-      Object.assign(t, {
-        aR: -0.9 + Math.sin(now / 90) * 0.06 + state.rodBend * 0.25,
-        aL: -0.9 + Math.sin(now / 120) * 0.25,
-        lean: -0.08 - state.rodBend * 0.12,
-      });
-      break;
+      return { clip: state.struggling ? 'Fishing_Struggling' : 'Fishing_Reeling' };
     case 'heave':
-      // 몸을 뒤로 젖히며 낚싯대를 하늘로 치켜든다
-      Object.assign(t, { aR: -2.4, aL: -2.2, lean: -0.28, bodyY: -0.06 });
-      break;
+      return { clip: 'Fishing_Catch', once: true };
     case 'carry':
-      if (style === 'one') Object.assign(t, { aR: -0.75 });
-      else if (style === 'two') Object.assign(t, { aR: -1.2, aL: -1.2, sL: 0.18, sR: -0.18 });
-      else Object.assign(t, { aR: -2.85, aL: -2.85, sL: -0.22, sR: 0.22 });
-      break;
-    case 'brag': {
-      const pump = Math.sin(pt * 9) * 0.15;
-      Object.assign(t, { aR: -2.9 + pump, aL: -2.9 + pump, sL: -0.3, sR: 0.3, bodyY: Math.abs(Math.sin(pt * 9)) * 0.08, lean: -0.08 });
-      break;
-    }
+      return { clip: style === 'one' ? 'Holding_C' : style === 'two' ? 'Holding_B' : 'Holding_A' };
+    case 'brag':
+      return { clip: 'Cheering' };
     case 'throwCharge':
-      Object.assign(t, { aR: 2.5, aL: -0.9, lean: -0.14 });
-      break;
+      return { clip: 'Throw', pauseAt: THROW_WINDUP };
     case 'throw':
-      Object.assign(t, { aR: pt < 0.12 ? 2.5 - (pt / 0.12) * 3.9 : -1.4, aL: -0.4, lean: 0.15 });
-      break;
+      return { clip: 'Throw', once: true };
+    case 'pickup':
+      return { clip: 'PickUp', once: true };
+    default:
+      return null;
   }
-  return t;
 }
 
-export function Avatar({ state, heldSpeciesId, color, name, rodTip }: Props) {
-  const body = useRef<Group>(null);
-  const legL = useRef<Group>(null);
-  const legR = useRef<Group>(null);
-  const armL = useRef<Group>(null);
-  const armR = useRef<Group>(null);
-  const rod = useRef<Group>(null);
-  const segs = useRef<(Group | null)[]>([]);
+/** 하체(이동·앉기) + 상체(낚시·들기) 두 레이어로 애니메이션을 섞는다 */
+class Rig {
+  mixer: AnimationMixer;
+  private actions = new Map<string, AnimationAction>();
+  private base: AnimationAction | null = null;
+  private upper: AnimationAction | null = null;
+  private upperKey = '';
+
+  constructor(
+    root: Object3D,
+    private clips: Map<string, AnimationClip>,
+  ) {
+    this.mixer = new AnimationMixer(root);
+  }
+
+  private action(name: string, variant: Variant): AnimationAction | null {
+    const key = `${name}:${variant}`;
+    let a = this.actions.get(key);
+    if (!a) {
+      const clip = this.clips.get(name);
+      if (!clip) return null;
+      a = this.mixer.clipAction(maskClip(clip, variant));
+      this.actions.set(key, a);
+    }
+    return a;
+  }
+
+  private swap(cur: AnimationAction | null, next: AnimationAction | null, fade: number) {
+    if (cur === next) return;
+    if (next) next.reset().setEffectiveWeight(1).fadeIn(fade).play();
+    if (cur) cur.fadeOut(fade);
+  }
+
+  update(state: AvatarState, dt: number) {
+    const sitting = !!state.seat;
+    const moving = !sitting && state.speed > 0;
+    const spec = upperFor(state);
+    // 앉아 있거나 걷는 중이면 하체는 이동·앉기, 상체만 낚시·들기 동작
+    const layered = !!spec && (sitting || moving);
+
+    const baseName = sitting ? 'Sit_Chair_Idle' : state.speed > 5 ? 'Running_A' : moving ? 'Walking_A' : 'Idle_A';
+    const nextBase = spec && !layered ? null : this.action(baseName, layered ? 'lower' : 'full');
+    this.swap(this.base, nextBase, 0.25);
+    this.base = nextBase;
+    if (nextBase && moving) nextBase.timeScale = baseName === 'Running_A' ? state.speed / 6.8 : state.speed / 4.2;
+
+    const variant: Variant = layered ? 'upper' : 'full';
+    const key = spec ? `${spec.clip}:${variant}` : '';
+    if (key !== this.upperKey) {
+      const next = spec ? this.action(spec.clip, variant) : null;
+      // 차징 → 캐스팅처럼 같은 클립이면 끊지 않고 젖힌 자세에서 이어서 재생
+      if (this.upper !== next) this.swap(this.upper, next, 0.18);
+      this.upper = next;
+      this.upperKey = key;
+    }
+    const u = this.upper;
+    if (u && spec) {
+      u.setLoop(spec.once ? LoopOnce : LoopRepeat, Infinity);
+      u.clampWhenFinished = !!spec.once;
+      if (spec.pauseAt !== undefined) {
+        const stop = spec.pauseAt * u.getClip().duration;
+        if (u.time >= stop) {
+          u.time = stop;
+          u.paused = true;
+        }
+      } else u.paused = false;
+      u.timeScale = spec.once ? 1.4 : 1;
+    }
+    this.mixer.update(dt);
+  }
+}
+
+const tmpA = new Vector3();
+const tmpB = new Vector3();
+
+export function Avatar(props: Props) {
+  return (
+    <Suspense fallback={null}>
+      <CharacterAvatar key={props.character} {...props} />
+    </Suspense>
+  );
+}
+
+function CharacterAvatar({ state, character, heldSpeciesId, name, rodTip }: Props) {
+  const outer = useRef<Group>(null);
   const heldRef = useRef<Group>(null);
   const tagRef = useRef<Group>(null);
-  const walkPhase = useRef(0);
+  const rodRef = useRef<Group>(null);
+  const segs = useRef<(Group | null)[]>([]);
+  const model = useCharacterModel(character);
+  const clips = useClips();
   const flop = useMemo<FlopControl>(() => ({ amp: 0.05, freq: 7 }), []);
   const heldSpecies = heldSpeciesId ? getSpecies(heldSpeciesId) : undefined;
 
-  useFrame((_, dt) => {
-    const b = body.current, lL = legL.current, lR = legR.current, aL = armL.current, aR = armR.current;
-    if (!b || !lL || !lR || !aL || !aR || !rod.current) return;
-    const now = performance.now();
-    const sitting = !!state.seat;
-    walkPhase.current += dt * (6 + state.speed * 1.6);
-    const swing = !sitting && state.speed > 0 ? Math.sin(walkPhase.current) * Math.min(1, state.speed / 4) * 0.7 : 0;
+  const bones = useMemo(() => {
+    model.scale.setScalar(SCALE);
+    return {
+      slotR: model.getObjectByName('handslotr'),
+      handR: model.getObjectByName('handr'),
+      handL: model.getObjectByName('handl'),
+    };
+  }, [model]);
 
-    const arms = armsFor(state, swing, now);
-    if (sitting && state.pose === 'idle') Object.assign(arms, { aL: -0.35, aR: -0.35 });
-    const legTarget = sitting ? -Math.PI / 2 : swing;
-    const bodyY = sitting ? -0.2 : arms.bodyY;
+  const rig = useMemo(() => new Rig(model, clips), [model, clips]);
+  useEffect(
+    () => () => {
+      rig.mixer.stopAllAction();
+    },
+    [rig],
+  );
 
-    const fast = state.pose === 'cast' || state.pose === 'throw' ? 26 : 14;
-    lL.rotation.x = damp(lL.rotation.x, legTarget, 14, dt);
-    lR.rotation.x = damp(lR.rotation.x, sitting ? -Math.PI / 2 : -swing, 14, dt);
-    aL.rotation.x = angleDamp(aL.rotation.x, arms.aL, fast, dt);
-    aR.rotation.x = angleDamp(aR.rotation.x, arms.aR, fast, dt);
-    aL.rotation.z = damp(aL.rotation.z, arms.sL, 12, dt);
-    aR.rotation.z = damp(aR.rotation.z, arms.sR, 12, dt);
-    b.position.y = damp(b.position.y, bodyY, 10, dt);
-    b.rotation.x = damp(b.rotation.x, arms.lean, 8, dt);
+  /**
+   * 낚싯대 장착 방향: Fishing_Idle 자세에서 손 소켓 기준으로
+   * "캐릭터 앞쪽 위 35도"가 낚싯대 방향(+Y), "아래"가 휘는 방향(+Z)이 되도록 맞춘다.
+   * 소켓 축을 하드코딩하지 않아 캐릭터가 바뀌어도 그대로 맞는다.
+   */
+  const rodMount = useMemo(() => {
+    const slot = bones.slotR;
+    const clip = clips.get('Fishing_Idle');
+    if (!slot || !clip) return { quaternion: new Quaternion(), scale: 1 };
+    const probe = new AnimationMixer(model);
+    probe.clipAction(clip).play();
+    probe.update(clip.duration * 0.2);
+    model.updateWorldMatrix(true, true);
+    const slotInRoot = new Matrix4().multiplyMatrices(new Matrix4().copy(model.matrixWorld).invert(), slot.matrixWorld);
+    const slotQ = new Quaternion();
+    const slotS = new Vector3();
+    slotInRoot.decompose(new Vector3(), slotQ, slotS);
+    const dir = new Vector3(0, Math.sin(0.6), Math.cos(0.6));
+    const down = new Vector3(0, -1, 0).addScaledVector(dir, dir.y).normalize();
+    const inv = slotQ.clone().invert();
+    const y = dir.applyQuaternion(inv);
+    const z = down.applyQuaternion(inv);
+    const x = new Vector3().crossVectors(y, z).normalize();
+    const q = new Quaternion().setFromRotationMatrix(new Matrix4().makeBasis(x, y, z));
+    probe.stopAllAction();
+    probe.uncacheRoot(model);
+    // 루트 스케일까지 포함한 소켓 스케일을 상쇄해 낚싯대를 미터 단위로 그린다
+    return { quaternion: q, scale: 1 / (slotS.y * SCALE) };
+  }, [bones.slotR, clips, model]);
 
-    rod.current.visible = state.hasRod;
+  useFrame((_, rawDt) => {
+    const dt = Math.min(rawDt, 0.05);
+    rig.update(state, dt);
+    const k = 1 - Math.exp(-10 * dt);
+    model.position.y += ((state.seat ? SIT_LIFT : 0) - model.position.y) * k;
+    model.position.z += ((state.seat ? SIT_FORWARD : 0) - model.position.z) * k;
+    model.updateWorldMatrix(true, true);
+    if (rodRef.current) rodRef.current.visible = state.hasRod;
+
     segs.current.forEach((s, i) => {
-      if (s) s.rotation.x = damp(s.rotation.x, state.rodBend * BEND_WEIGHT[i]!, 18, dt);
+      if (s) s.rotation.x += (state.rodBend * BEND_WEIGHT[i]! - s.rotation.x) * (1 - Math.exp(-18 * dt));
     });
 
-    // 손에 든 물고기: 팔 각도로 손 위치를 계산해 따라간다
+    // 손에 든 물고기: 손 뼈 위치를 따라간다
     const h = heldRef.current;
-    if (h) {
+    const o = outer.current;
+    if (h && o) {
       const held = state.held;
-      h.visible = !!held;
-      if (!held && tagRef.current) tagRef.current.position.y = 0;
-      if (held) {
+      h.visible = !!held && !!heldSpecies;
+      if (held && bones.handR && bones.handL) {
         const len = fishDisplayLength(held.sizeCm);
-        const style = state.pose === 'throwCharge' ? 'one' : carryStyle(held.tier);
-        if (style === 'one') {
-          const a = aR.rotation.x;
-          h.position.set(SHOULDER_X, SHOULDER_Y - ARM_LEN * Math.cos(a) - len * 0.45, -ARM_LEN * Math.sin(a));
+        const oneHand = state.pose === 'throwCharge' || state.pose === 'throw' || (carryStyle(held.tier) === 'one' && state.pose !== 'brag');
+        if (oneHand) {
+          (bones.slotR ?? bones.handR).getWorldPosition(tmpA);
+          o.worldToLocal(tmpA);
+          h.position.set(tmpA.x, tmpA.y - len * 0.42, tmpA.z);
           h.rotation.set(-Math.PI / 2, 0, 0);
         } else {
-          const a = (aL.rotation.x + aR.rotation.x) / 2;
-          const y = SHOULDER_Y - ARM_LEN * Math.cos(a);
-          h.position.set(0, y + (style === 'overhead' ? 0.42 : 0), -ARM_LEN * Math.sin(a) + 0.08);
+          bones.handR.getWorldPosition(tmpA);
+          bones.handL.getWorldPosition(tmpB);
+          o.worldToLocal(tmpA);
+          o.worldToLocal(tmpB);
+          h.position.addVectors(tmpA, tmpB).multiplyScalar(0.5);
+          h.position.y += 0.06;
           h.rotation.set(0, Math.PI / 2, 0);
         }
         h.scale.setScalar(len);
         flop.amp = state.pose === 'brag' ? 0.12 : 0.05;
-        if (tagRef.current) tagRef.current.position.y = style === 'overhead' ? 0.75 : 0;
         flop.freq = state.pose === 'brag' ? 14 : 7;
       }
+    }
+    if (tagRef.current) {
+      const up = state.pose === 'brag' ? 0.5 : 0;
+      tagRef.current.position.y += (up - tagRef.current.position.y) * Math.min(1, dt * 8);
     }
   });
 
   return (
-    <group>
-      <group ref={body}>
-        <group ref={legL} position={[-0.13, 0.62, 0]}>
-          <mesh position={[0, -0.3, 0]} castShadow>
-            <boxGeometry args={[0.18, 0.62, 0.2]} />
-            <meshStandardMaterial color={PANTS} flatShading />
-          </mesh>
-        </group>
-        <group ref={legR} position={[0.13, 0.62, 0]}>
-          <mesh position={[0, -0.3, 0]} castShadow>
-            <boxGeometry args={[0.18, 0.62, 0.2]} />
-            <meshStandardMaterial color={PANTS} flatShading />
-          </mesh>
-        </group>
-        <mesh position={[0, 0.93, 0]} castShadow>
-          <cylinderGeometry args={[0.25, 0.31, 0.64, 6]} />
-          <meshStandardMaterial color={color} flatShading />
-        </mesh>
-        <group ref={armL} position={[-SHOULDER_X, SHOULDER_Y, 0]}>
-          <mesh position={[0, -0.24, 0]} castShadow>
-            <boxGeometry args={[0.13, 0.5, 0.13]} />
-            <meshStandardMaterial color={color} flatShading />
-          </mesh>
-        </group>
-        <group ref={armR} position={[SHOULDER_X, SHOULDER_Y, 0]}>
-          <mesh position={[0, -0.24, 0]} castShadow>
-            <boxGeometry args={[0.13, 0.5, 0.13]} />
-            <meshStandardMaterial color={color} flatShading />
-          </mesh>
-          {/* 팔이 앞으로 -0.9 rad 일 때 낚싯대가 앞쪽 위 35도를 향하도록 */}
-          <group ref={rod} position={[0, -0.48, 0.04]} rotation-x={1.865}>
-            <mesh position={[0, 0.25, 0.05]}>
-              <cylinderGeometry args={[0.06, 0.06, 0.06, 8]} />
-              <meshStandardMaterial color="#c9c4bb" flatShading />
-            </mesh>
-            <RodSegment index={0} segs={segs} tip={rodTip} />
-          </group>
-        </group>
-        <mesh position={[0, 1.5, 0]} castShadow>
-          <icosahedronGeometry args={[0.26, 0]} />
-          <meshStandardMaterial color={SKIN} flatShading />
-        </mesh>
-        {[-0.09, 0.09].map((x) => (
-          <mesh key={x} position={[x, 1.53, 0.23]}>
-            <boxGeometry args={[0.04, 0.06, 0.02]} />
-            <meshStandardMaterial color="#2b2522" />
-          </mesh>
-        ))}
-        <mesh position={[0, 1.7, 0]} castShadow>
-          <cylinderGeometry args={[0.2, 0.27, 0.16, 7]} />
-          <meshStandardMaterial color={HAT} flatShading />
-        </mesh>
-        <mesh position={[0, 1.63, 0]}>
-          <cylinderGeometry args={[0.4, 0.4, 0.03, 9]} />
-          <meshStandardMaterial color={HAT} flatShading />
-        </mesh>
-        <group ref={heldRef} visible={false}>
-          {heldSpecies && <FishMesh species={heldSpecies} flop={flop} />}
-        </group>
+    <group ref={outer}>
+      <primitive object={model} />
+      {bones.slotR &&
+        createPortal(
+          <group ref={rodRef} quaternion={rodMount.quaternion} scale={rodMount.scale}>
+            <group position={[0, -ROD_GRIP_BACK, 0]}>
+              <mesh position={[0, 0.3, 0]}>
+                <cylinderGeometry args={[0.05, 0.05, 0.06, 8]} />
+                <meshStandardMaterial color="#c9c4bb" flatShading />
+              </mesh>
+              <RodSegment index={0} segs={segs} tip={rodTip} />
+            </group>
+          </group>,
+          bones.slotR,
+        )}
+      <group ref={heldRef} visible={false}>
+        {heldSpecies && <FishMesh species={heldSpecies} flop={flop} />}
       </group>
       <group ref={tagRef}>
         <NameTag name={name} />
@@ -240,8 +314,8 @@ export function Avatar({ state, heldSpeciesId, color, name, rodTip }: Props) {
 /** 마디가 이어진 낚싯대. 각 마디가 조금씩 휘어 전체가 활처럼 굽는다. */
 function RodSegment({ index, segs, tip }: { index: number; segs: React.RefObject<(Group | null)[]>; tip?: Object3D }) {
   const len = ROD_SEGS[index]!;
-  const r0 = 0.035 - index * 0.006;
-  const r1 = r0 - 0.006;
+  const r0 = 0.03 - index * 0.005;
+  const r1 = r0 - 0.005;
   const last = index === ROD_SEGS.length - 1;
   return (
     <group
@@ -251,7 +325,7 @@ function RodSegment({ index, segs, tip }: { index: number; segs: React.RefObject
       position={[0, index === 0 ? 0 : ROD_SEGS[index - 1]!, 0]}
     >
       <mesh position={[0, len / 2, 0]} castShadow>
-        <cylinderGeometry args={[Math.max(0.01, r1), r0, len, 5]} />
+        <cylinderGeometry args={[Math.max(0.008, r1), r0, len, 5]} />
         <meshStandardMaterial color={index % 2 ? '#7a5634' : '#6b4a2e'} flatShading />
       </mesh>
       {last ? tip && <primitive object={tip} position={[0, len, 0]} /> : <RodSegment index={index + 1} segs={segs} tip={tip} />}
@@ -282,7 +356,7 @@ function NameTag({ name }: { name: string }) {
     return t;
   }, [name]);
   return (
-    <sprite position={[0, 2.15, 0]} scale={[1.6, 0.4, 1]}>
+    <sprite position={[0, 2.05, 0]} scale={[1.6, 0.4, 1]}>
       <spriteMaterial map={texture} depthWrite={false} transparent />
     </sprite>
   );

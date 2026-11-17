@@ -50,7 +50,8 @@ export const fishing = {
   flight: null as Flight | null,
   flightPos: new Vector3(),
   flightRot: new Euler(),
-  bragUntil: 0,
+  /** 자랑하기·줍기처럼 잠깐 하는 동작이 끝나는 시각 (holding 단계 시간 기준) */
+  tempPoseUntil: 0,
   groundFish: [] as GroundFishItem[],
   onRipple: (_x: number, _z: number, _strength: number) => {},
 };
@@ -81,9 +82,7 @@ function go(phase: FishingPhase) {
 }
 
 function pose(p: Pose) {
-  // 앉아 있을 땐 크게 젖히는 동작 대신 낚싯대를 잡은 자세로
-  if (player.seat && (p === 'charge' || p === 'cast' || p === 'reel' || p === 'heave')) setPose('hold');
-  else setPose(p);
+  setPose(p);
 }
 
 function nextBiteDelay() {
@@ -107,18 +106,20 @@ export function cancelFishing() {
   fishing.reel = null;
   player.hasRod = false;
   player.rodBend = 0;
+  player.struggling = false;
   pose('idle');
   go('idle');
   patchGame({ charge: 0, reel: null, fishPrompt: null });
 }
 
-function startHolding(result: CatchResult, tier: CatchTier, brag: boolean) {
+function startHolding(result: CatchResult, tier: CatchTier, intro: 'brag' | 'pickup' | null) {
   player.held = { speciesId: result.speciesId, sizeCm: result.sizeCm, tier };
   player.hasRod = false;
   player.rodBend = 0;
+  player.struggling = false;
   go('holding');
-  fishing.bragUntil = brag ? 1.5 : 0;
-  pose(brag ? 'brag' : 'carry');
+  fishing.tempPoseUntil = intro === 'brag' ? 1.5 : intro === 'pickup' ? 0.7 : 0;
+  pose(intro ?? 'carry');
   patchGame({ result, fishPrompt: HOLD_PROMPT, charge: 0, heldSpeciesId: result.speciesId });
 }
 
@@ -138,7 +139,7 @@ export function stashHeld() {
 /** 화면 버튼용: 자랑하기 */
 export function bragHeld() {
   if (fishing.phase !== 'holding') return;
-  fishing.bragUntil = fishing.t + 1.6;
+  fishing.tempPoseUntil = fishing.t + 1.6;
   pose('brag');
 }
 
@@ -162,7 +163,7 @@ export function pickUpGroundFish(item: GroundFishItem) {
   const species = getSpecies(item.speciesId);
   if (!species) return;
   catchAudio.pop();
-  startHolding({ speciesId: item.speciesId, sizeCm: item.sizeCm, isNew: false, isRecord: false }, catchTier(species, item.sizeCm), false);
+  startHolding({ speciesId: item.speciesId, sizeCm: item.sizeCm, isNew: false, isRecord: false }, catchTier(species, item.sizeCm), 'pickup');
 }
 
 let groundId = 0;
@@ -245,7 +246,7 @@ function arriveLanding() {
   } else if (fl.tier === 'medium') audio.caught();
   f.roll = null;
   f.reel = null;
-  startHolding(result, fl.tier, fl.tier === 'big' || fl.tier === 'legend');
+  startHolding(result, fl.tier, fl.tier === 'big' || fl.tier === 'legend' ? 'brag' : null);
 }
 
 function launchThrow() {
@@ -380,6 +381,7 @@ export function stepFishing(dt: number) {
         audio.bite();
         f.onRipple(f.target.x, f.target.z, 0.9);
         f.biteAt = performance.now();
+        pose('bite');
         go('bite');
         patchGame({ fishPrompt: '지금! Space' });
       }
@@ -396,6 +398,7 @@ export function stepFishing(dt: number) {
           patchGame({ fishPrompt: null });
         } else {
           f.biteIn = nextBiteDelay();
+          pose('hold');
           go('waiting');
         }
         return;
@@ -405,6 +408,7 @@ export function stepFishing(dt: number) {
         f.roll = null;
         f.dip = 0;
         f.biteIn = nextBiteDelay();
+        pose('hold');
         go('waiting');
         patchGame({ fishPrompt: '찌를 지켜보세요 · Esc 거두기' });
       }
@@ -419,6 +423,7 @@ export function stepFishing(dt: number) {
       const wasSurging = surging(f.reel);
       f.reel = stepReel(f.reel, dt, input.isHeld('fish'), species.strength, Math.random);
       const nowSurging = surging(f.reel);
+      player.struggling = nowSurging;
       if (nowSurging && !wasSurging) {
         audio.surge();
         f.onRipple(f.bobber.x, f.bobber.z, 0.7);
@@ -451,15 +456,15 @@ export function stepFishing(dt: number) {
       return;
     }
     case 'holding': {
-      if (f.bragUntil > 0 && f.t >= f.bragUntil) {
-        f.bragUntil = 0;
+      if (f.tempPoseUntil > 0 && f.t >= f.tempPoseUntil) {
+        f.tempPoseUntil = 0;
         pose('carry');
       }
       if (f.t > 1.3) fx.zoomTarget = 0;
       if (input.wasPressed('fish')) stashHeld();
       else if (input.wasPressed('brag')) bragHeld();
       else if (input.wasPressed('release')) {
-        f.bragUntil = 0;
+        f.tempPoseUntil = 0;
         fx.zoomTarget = 0;
         pose('throwCharge');
         go('throwCharge');

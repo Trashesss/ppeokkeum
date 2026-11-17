@@ -2,7 +2,7 @@ import { Object3D, Vector3 } from 'three';
 import type { CatchTier, Seat } from '@fishing/shared';
 
 /** 상체 동작. 다리(걷기·앉기)는 speed 와 seat 으로 따로 정한다. */
-export type Pose = 'idle' | 'charge' | 'cast' | 'hold' | 'reel' | 'heave' | 'carry' | 'brag' | 'throwCharge' | 'throw';
+export type Pose = 'idle' | 'charge' | 'cast' | 'hold' | 'bite' | 'reel' | 'heave' | 'carry' | 'brag' | 'throwCharge' | 'throw' | 'pickup';
 
 export interface HeldFish {
   speciesId: string;
@@ -30,6 +30,7 @@ export const player = {
   hasRod: false,
   /** 낚싯대 휨 (0 = 곧음, 1.3 = 크게 휨) */
   rodBend: 0,
+  struggling: false,
   held: null as HeldFish | null,
 };
 

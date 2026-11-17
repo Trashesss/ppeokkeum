@@ -17,7 +17,8 @@ npm run build
 개발용 URL 옵션
 - `?time=0.5`: 게임 시각 고정 시작 (0=자정, 0.5=정오, 0.9=밤)
 - `?fast`: 입질 대기 1~2초
-- `?showcase=fish&ids=crucian,catfish,mackerel&yaw=0.5`: 물고기 모델 비교 화면 (`&spin` 회전, `&flop=0.15` 파닥임)
+- `?showcase=fish&all`: 물고기 12종 비교 화면 (`&ids=crucian,carp`, `&yaw=0.5`, `&spin`, `&flop=0.15`)
+- `?showcase=character&clip=Fishing_Cast&t=0.4`: 캐릭터·애니메이션 클립 확인 (`&chars=Ranger,Mage`, `&ts=0.1,0.3,0.5` 시점별 나열)
 
 ## 구조
 
@@ -27,8 +28,12 @@ apps/client       Vite + React Three Fiber 클라이언트
   src/game        입력(행동 단위), 낚시 상태 머신, 프로필(도감) 저장, 오디오 합성
   src/scene       지형·물·소품·환경광·아바타·낚시 연출·입자
   src/scene/fish  물고기 체형 명세(shapes.ts) → 저폴리 메시 생성기 + 파닥임 셰이더
+  src/scene/Avatar.tsx  KayKit 캐릭터 + 상·하체 레이어 애니메이션, 손 소켓에 낚싯대·물고기
+tools             에셋 변환 스크립트 (npm run assets:characters)
   src/ui          시작 화면, HUD, 들고 있는 물고기 카드, 도감
 ```
+
+에셋 출처와 재생성 방법은 [CREDITS.md](CREDITS.md).
 
 ## 조작
 

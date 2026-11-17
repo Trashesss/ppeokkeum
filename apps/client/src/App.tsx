@@ -9,9 +9,10 @@ import { PlayerController } from './scene/PlayerController';
 import { Props } from './scene/Props';
 import { World } from './scene/World';
 import { Hud } from './ui/Hud';
+import { CharacterShowcase } from './dev/CharacterShowcase';
 import { FishShowcase } from './dev/FishShowcase';
 
-const SHOWCASE = import.meta.env.DEV && new URLSearchParams(location.search).get('showcase') === 'fish';
+const SHOWCASE = import.meta.env.DEV ? new URLSearchParams(location.search).get('showcase') : null;
 
 /** 모든 useFrame 다음에 실행되도록 Canvas 의 마지막 자식으로 둔다 */
 function InputTicker() {
@@ -21,7 +22,8 @@ function InputTicker() {
 
 export function App() {
   useEffect(() => bindKeyboard(), []);
-  if (SHOWCASE) return <FishShowcase />;
+  if (SHOWCASE === 'fish') return <FishShowcase />;
+  if (SHOWCASE === 'character') return <CharacterShowcase />;
   return (
     <>
       <Canvas shadows dpr={[1, 1.75]} camera={{ fov: 50, near: 0.1, far: 400, position: [20, 12, 30] }}>

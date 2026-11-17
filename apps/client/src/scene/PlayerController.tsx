@@ -4,6 +4,7 @@ import { Vector3, type Group } from 'three';
 import { COLLIDERS, SEATS, SPAWN, groundHeight, resolveColliders, walkableHeight } from '@fishing/shared';
 import { cancelFishing, fishing, nearestGroundFish, pickUpGroundFish } from '../game/fishing';
 import { fx } from '../game/fx';
+import { angleDamp } from '../game/angles';
 import { input } from '../game/input';
 import { camState, player, setPose } from '../game/player';
 import { useProfile } from '../game/profile';
@@ -21,13 +22,6 @@ const camTarget = new Vector3();
 const camDesired = new Vector3();
 /** 카메라가 바라보는 점 (부드럽게 따라감) */
 const camLook = new Vector3();
-
-function angleDamp(cur: number, target: number, k: number, dt: number) {
-  let d = target - cur;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  return cur + d * (1 - Math.exp(-k * dt));
-}
 
 const CANOPIES = COLLIDERS.filter((c) => c.kind === 'tree' || c.kind === 'pine').map((c) => ({
   x: c.x,
@@ -134,7 +128,7 @@ function useCameraDrag() {
 export function PlayerController() {
   const group = useRef<Group>(null);
   const nickname = useProfile((s) => s.nickname);
-  const color = useProfile((s) => s.color);
+  const character = useProfile((s) => s.character);
   const heldSpeciesId = useGame((s) => s.heldSpeciesId);
   useCameraDrag();
 
@@ -243,7 +237,7 @@ export function PlayerController() {
 
   return (
     <group ref={group}>
-      <Avatar state={player} heldSpeciesId={heldSpeciesId} color={color} name={nickname || '낚시꾼'} rodTip={player.rodTip} />
+      <Avatar state={player} character={character} heldSpeciesId={heldSpeciesId} name={nickname || '낚시꾼'} rodTip={player.rodTip} />
     </group>
   );
 }
