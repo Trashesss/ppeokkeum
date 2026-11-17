@@ -2,6 +2,7 @@ import { useFrame } from '@react-three/fiber';
 import { useMemo, useRef } from 'react';
 import { CanvasTexture, SRGBColorSpace, type Group, type Object3D } from 'three';
 import { getSpecies } from '@fishing/shared';
+import { angleDamp } from '../game/angles';
 import { fishDisplayLength } from '../game/fx';
 import { carryStyle, type HeldFish, type Pose } from '../game/player';
 import { FishMesh, type FlopControl } from './fish/FishMesh';
@@ -39,6 +40,11 @@ const BEND_WEIGHT = [0.08, 0.18, 0.3, 0.44];
 
 const damp = (cur: number, target: number, k: number, dt: number) => cur + (target - cur) * (1 - Math.exp(-k * dt));
 
+/** 낚싯대가 뒤쪽 위 30도를 향하도록 팔을 머리 위로 젖힌 각도 (팔 기준 낚싯대 방향에서 역산) */
+const WINDUP = -2.92;
+/** 던진 직후 낚싯대가 수평보다 조금 위를 향하는 각도 */
+const FOLLOW_THROUGH = -0.75;
+
 interface ArmTarget {
   aL: number;
   aR: number;
@@ -55,10 +61,10 @@ function armsFor(state: AvatarState, walkSwing: number, now: number): ArmTarget 
   const style = state.held ? carryStyle(state.held.tier) : 'one';
   switch (state.pose) {
     case 'charge':
-      Object.assign(t, { aR: 2.6, aL: -0.6, lean: -0.12 });
+      Object.assign(t, { aR: WINDUP, aL: -0.6, lean: -0.12 });
       break;
     case 'cast':
-      Object.assign(t, { aR: pt < 0.15 ? 2.6 - (pt / 0.15) * 3.8 : -1.2, aL: -0.5, lean: 0.12 });
+      Object.assign(t, { aR: pt < 0.3 ? FOLLOW_THROUGH : -0.9, aL: -0.5, lean: pt < 0.3 ? 0.14 : 0.04 });
       break;
     case 'hold':
       Object.assign(t, { aR: -0.9, aL: -0.5 });
@@ -121,11 +127,11 @@ export function Avatar({ state, heldSpeciesId, color, name, rodTip }: Props) {
     const legTarget = sitting ? -Math.PI / 2 : swing;
     const bodyY = sitting ? -0.2 : arms.bodyY;
 
-    const fast = state.pose === 'cast' || state.pose === 'throw' ? 40 : 14;
+    const fast = state.pose === 'cast' || state.pose === 'throw' ? 26 : 14;
     lL.rotation.x = damp(lL.rotation.x, legTarget, 14, dt);
     lR.rotation.x = damp(lR.rotation.x, sitting ? -Math.PI / 2 : -swing, 14, dt);
-    aL.rotation.x = damp(aL.rotation.x, arms.aL, fast, dt);
-    aR.rotation.x = damp(aR.rotation.x, arms.aR, fast, dt);
+    aL.rotation.x = angleDamp(aL.rotation.x, arms.aL, fast, dt);
+    aR.rotation.x = angleDamp(aR.rotation.x, arms.aR, fast, dt);
     aL.rotation.z = damp(aL.rotation.z, arms.sL, 12, dt);
     aR.rotation.z = damp(aR.rotation.z, arms.sR, 12, dt);
     b.position.y = damp(b.position.y, bodyY, 10, dt);
