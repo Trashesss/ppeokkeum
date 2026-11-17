@@ -83,7 +83,7 @@ function FishButton() {
       }}
       onPointerUp={() => input.release('fish')}
       onPointerCancel={() => input.release('fish')}
-      aria-label="낚시 (Space)"
+      aria-label="낚시 (Q)"
     >
       🎣
     </button>
@@ -152,7 +152,7 @@ export function Hud() {
         )}
       </div>
       <FishButton />
-      <div className="help muted">WASD 이동 · Shift 달리기 · 드래그 시점 · Space 낚시 · E 앉기 · B 도감</div>
+      <div className="help muted">WASD 이동 · Shift 달리기 · 드래그 시점 · Space 점프 · Q 낚시 · E 앉기 · B 도감</div>
 
       {result && (phase === 'holding' || phase === 'throwCharge') && <CatchCard result={result} throwing={phase === 'throwCharge'} />}
       <Flash />

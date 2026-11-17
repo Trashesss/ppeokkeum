@@ -6,17 +6,20 @@ import { cancelFishing, fishing, nearestGroundFish, pickUpGroundFish } from '../
 import { fx } from '../game/fx';
 import { angleDamp } from '../game/angles';
 import { input } from '../game/input';
-import { camState, player, setPose } from '../game/player';
+import { JUMP, MOVE, camState, player, setPose } from '../game/player';
 import { useProfile } from '../game/profile';
 import { ACTIVE_FISHING, patchGame, useGame } from '../game/store';
 import { Avatar } from './Avatar';
 
-const WALK = 4.2;
-const RUN = 6.8;
+/** 목표 속도를 따라가는 빠르기 (가속·감속). 10 이면 약 0.3초에 거의 다 붙는다 */
+const ACCEL = 10;
 const BODY_RADIUS = 0.35;
 const SEAT_RANGE = 1.8;
 
 player.pos.set(SPAWN.x, groundHeight(SPAWN.x, SPAWN.z), SPAWN.z);
+
+/** 이동 중인 속도와 방향. 손을 떼도 방향을 유지한 채 감속한다 */
+const motion = { speed: 0, dx: 0, dz: 1 };
 
 const camTarget = new Vector3();
 const camDesired = new Vector3();
@@ -164,6 +167,10 @@ export function PlayerController() {
           player.seat = seat;
           player.pos.set(seat.x, seat.y, seat.z);
           player.yaw = seat.yaw;
+          motion.speed = 0;
+          player.speed = 0;
+          player.jump = 'none';
+          player.vy = 0;
           setPose('idle');
           patchGame({ sitting: true });
         }
@@ -179,28 +186,72 @@ export function PlayerController() {
             : null,
     });
 
-    if (moving) {
+    let targetSpeed = 0;
+    if (moving && !player.seat) {
       const fx = -Math.sin(camState.yaw);
       const fz = -Math.cos(camState.yaw);
-      let mx = -fz * ix + fx * iz;
-      let mz = fx * ix + fz * iz;
+      const mx = -fz * ix + fx * iz;
+      const mz = fx * ix + fz * iz;
       const len = Math.hypot(mx, mz);
-      mx /= len;
-      mz /= len;
-      const speed = input.isHeld('run') ? RUN : WALK;
-      const nx = player.pos.x + mx * speed * dt;
-      const nz = player.pos.z + mz * speed * dt;
-      if (!tryMove(nx, nz) && !tryMove(nx, player.pos.z)) tryMove(player.pos.x, nz);
-      player.yaw = angleDamp(player.yaw, Math.atan2(mx, mz), 12, dt);
-      player.speed = speed;
-    } else {
-      player.speed = 0;
+      motion.dx = mx / len;
+      motion.dz = mz / len;
+      const run = input.isHeld('run');
+      // 물고기를 들면 한 단계 느리게: 기본은 걷기, Shift 는 종종걸음
+      targetSpeed = player.held ? (run ? MOVE.jog : MOVE.walk) : run ? MOVE.run : MOVE.jog;
+      player.yaw = angleDamp(player.yaw, Math.atan2(motion.dx, motion.dz), 12, dt);
     }
+    motion.speed += (targetSpeed - motion.speed) * (1 - Math.exp(-ACCEL * dt));
+    if (targetSpeed === 0 && motion.speed < 0.05) motion.speed = 0;
+
+    // 애니메이션은 입력이 아니라 실제로 움직인 거리를 따른다 (벽에 막히거나 비껴 미끄러질 때)
+    let moved = 0;
+    if (motion.speed > 0 && !player.seat && dt > 0) {
+      const px = player.pos.x;
+      const pz = player.pos.z;
+      const nx = px + motion.dx * motion.speed * dt;
+      const nz = pz + motion.dz * motion.speed * dt;
+      if (!tryMove(nx, nz) && !tryMove(nx, pz)) tryMove(px, nz);
+      moved = Math.hypot(player.pos.x - px, player.pos.z - pz) / dt;
+    }
+    // 충돌 보정으로 생기는 프레임별 떨림만 걸러낸다
+    player.speed += (moved - player.speed) * (1 - Math.exp(-20 * dt));
+    if (moved === 0 && player.speed < 0.05) player.speed = 0;
     if (fishing.phase === 'idle' && !player.held) setPose('idle');
 
-    if (!player.seat) {
-      const h = walkableHeight(player.pos.x, player.pos.z) ?? player.pos.y;
-      player.pos.y += (h - player.pos.y) * (1 - Math.exp(-18 * dt));
+    // 점프: 낚시를 하지 않을 때만 (물고기를 든 채로는 가능)
+    const canJump =
+      !blocked &&
+      !player.seat &&
+      (fishing.phase === 'idle' || fishing.phase === 'holding') &&
+      (player.jump === 'none' || player.jump === 'land');
+    if (canJump && input.wasPressed('jump')) {
+      player.jump = 'takeoff';
+      player.jumpTime = 0;
+    }
+    player.jumpTime += dt;
+    const floorY = walkableHeight(player.pos.x, player.pos.z) ?? player.pos.y;
+    if (player.jump === 'takeoff' && player.jumpTime >= JUMP.takeoff) {
+      player.jump = 'air';
+      player.jumpTime = 0;
+      player.vy = JUMP.speed;
+    }
+    if (player.jump === 'air') {
+      player.vy -= JUMP.gravity * dt;
+      player.pos.y += player.vy * dt;
+      // 계단·부두처럼 높은 곳으로 뛰어오르면 발밑을 따라 올린다
+      if (player.pos.y < floorY) {
+        player.pos.y = floorY;
+        if (player.vy < 0) {
+          player.jump = 'land';
+          player.jumpTime = 0;
+          player.vy = 0;
+        }
+      }
+    } else if (!player.seat) {
+      player.pos.y += (floorY - player.pos.y) * (1 - Math.exp(-18 * dt));
+    }
+    if (player.jump === 'land' && player.jumpTime >= (player.speed > 0.5 ? JUMP.landMoving : JUMP.land)) {
+      player.jump = 'none';
     }
 
     if (group.current) {
@@ -212,7 +263,9 @@ export function PlayerController() {
     fx.zoom += (fx.zoomTarget - fx.zoom) * (1 - Math.exp(-4 * dt));
     fx.shake *= Math.exp(-6 * dt);
     const dist = camState.dist * (1 - fx.zoom * 0.45);
-    camTarget.set(player.pos.x, player.pos.y + 1.3 + fx.zoom * 0.5, player.pos.z);
+    // 점프 높이는 카메라에 조금만 반영해 화면이 덜 출렁이게 한다
+    const camY = player.jump === 'air' ? floorY + (player.pos.y - floorY) * 0.35 : player.pos.y;
+    camTarget.set(player.pos.x, camY + 1.3 + fx.zoom * 0.5, player.pos.z);
     const cp = Math.cos(camState.pitch);
     camDesired.set(
       camTarget.x + Math.sin(camState.yaw) * cp * dist,

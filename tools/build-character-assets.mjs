@@ -19,7 +19,7 @@ export const CHARACTERS = ['Ranger', 'Rogue', 'Rogue_Hooded', 'Barbarian', 'Knig
 /** 파일별로 남길 클립 */
 const KEEP = {
   General: ['Idle_A', 'PickUp', 'Throw', 'Interact'],
-  MovementBasic: ['Walking_A', 'Running_A'],
+  MovementBasic: ['Walking_A', 'Running_A', 'Running_B', 'Jump_Start', 'Jump_Idle', 'Jump_Land'],
   Simulation: ['Cheering', 'Waving', 'Sit_Chair_Down', 'Sit_Chair_Idle', 'Sit_Chair_StandUp'],
   Tools: ['Fishing_Cast', 'Fishing_Idle', 'Fishing_Bite', 'Fishing_Reeling', 'Fishing_Struggling', 'Fishing_Tug', 'Fishing_Catch', 'Holding_A', 'Holding_B', 'Holding_C'],
 };

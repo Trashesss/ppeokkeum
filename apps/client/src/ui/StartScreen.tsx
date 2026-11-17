@@ -59,7 +59,7 @@ export function StartScreen() {
         <ul className="keys">
           <li><kbd>WASD</kbd> 이동 · <kbd>Shift</kbd> 달리기</li>
           <li><kbd>드래그</kbd> 시점 · <kbd>휠</kbd> 확대</li>
-          <li><kbd>Space</kbd> 낚시 · <kbd>E</kbd> 앉기 · <kbd>B</kbd> 도감</li>
+          <li><kbd>Space</kbd> 점프 · <kbd>Q</kbd> 낚시 · <kbd>E</kbd> 앉기 · <kbd>B</kbd> 도감</li>
         </ul>
       </form>
     </div>

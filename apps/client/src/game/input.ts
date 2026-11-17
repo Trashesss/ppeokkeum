@@ -2,7 +2,7 @@
  * 키보드·화면 버튼을 "행동" 단위로 바꾼다.
  * 게임 로직은 키가 아니라 행동만 본다. 3단계에서 터치 입력은 press/release 만 호출하면 된다.
  */
-export type Action = 'up' | 'down' | 'left' | 'right' | 'run' | 'fish' | 'interact' | 'release' | 'brag' | 'cancel' | 'dex';
+export type Action = 'up' | 'down' | 'left' | 'right' | 'run' | 'jump' | 'fish' | 'interact' | 'release' | 'brag' | 'cancel' | 'dex';
 
 const KEYMAP: Record<string, Action> = {
   KeyW: 'up', ArrowUp: 'up',
@@ -10,7 +10,8 @@ const KEYMAP: Record<string, Action> = {
   KeyA: 'left', ArrowLeft: 'left',
   KeyD: 'right', ArrowRight: 'right',
   ShiftLeft: 'run', ShiftRight: 'run',
-  Space: 'fish',
+  Space: 'jump',
+  KeyQ: 'fish',
   KeyE: 'interact',
   KeyR: 'release',
   KeyF: 'brag',
@@ -19,7 +20,7 @@ const KEYMAP: Record<string, Action> = {
 };
 
 /**
- * 눌림은 다음 프레임이 끝날 때까지만 유효하다. 결과 창에서 누른 Space가 다음 캐스팅으로 새지 않게 하면서,
+ * 눌림은 다음 프레임이 끝날 때까지만 유효하다. 결과 창에서 누른 Q가 다음 캐스팅으로 새지 않게 하면서,
  * 시간 기준이 아니라 프레임 기준이라 저사양 기기(느린 프레임)에서도 눌림이 사라지지 않는다.
  */
 let frame = 0;

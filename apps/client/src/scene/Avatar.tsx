@@ -6,8 +6,9 @@ import {
 } from 'three';
 import { getSpecies } from '@fishing/shared';
 import { fishDisplayLength } from '../game/fx';
-import { carryStyle, type HeldFish, type Pose } from '../game/player';
+import { JUMP, MOVE, carryStyle, type HeldFish, type JumpPhase, type Pose } from '../game/player';
 import { useCharacterModel, useClips, type CharacterId } from './character/assets';
+import { measureGait, type Gait } from './character/gait';
 import { FishMesh, type FlopControl } from './fish/FishMesh';
 
 /** 아바타가 읽는 상태. 1단계에서 다른 플레이어도 같은 모양으로 동기화한다. */
@@ -21,6 +22,9 @@ export interface AvatarState {
   /** 물고기가 몸부림치는 중 (끌어올리기 애니메이션 전환) */
   struggling: boolean;
   held: HeldFish | null;
+  jump: JumpPhase;
+  /** 현재 점프 단계에 들어온 뒤 경과 시간 */
+  jumpTime: number;
 }
 
 interface Props {
@@ -97,19 +101,81 @@ function upperFor(state: AvatarState): UpperSpec | null {
   }
 }
 
+/** 이 속도(m/s) 아래면 멈춘 것으로 본다 */
+const MOVING_EPS = 0.05;
+/** 하체 가중치가 목표를 따라가는 빠르기 (앉기·상체 전환 같은 끊기는 변화를 부드럽게) */
+const BASE_BLEND_RATE = 10;
+/** 점프 중에는 자세가 빨리 바뀌어야 해서 더 빠르게 섞는다 */
+const JUMP_BLEND_RATE = 25;
+const IDLE = 'Idle_A';
+/**
+ * 이동 클립과 그 클립이 온전히 재생되는 속도. 사이 속도에서는 이웃 클립끼리 섞는다.
+ * 0 → 서기, MOVE.walk 걷기, MOVE.jog 달리기, MOVE.run 전력 질주.
+ */
+const GAITS = [
+  { clip: 'Walking_A', at: MOVE.walk },
+  { clip: 'Running_A', at: MOVE.jog },
+  { clip: 'Running_B', at: MOVE.run },
+] as const;
+
+/**
+ * 점프 클립 구간 (정규화 시각, 측정값).
+ * Jump_Start: 0~0.45 웅크림, 0.5 에서 발이 떨어지고 0.7 부터 공중 자세.
+ *   앞쪽 웅크림은 건너뛰고 START_FROM 에서 시작해 JUMP.takeoff 초 뒤에 이륙 지점에 닿게 한다.
+ * Jump_Land: 0.2 에서 발이 닿고 0.8 이면 다시 선 자세.
+ */
+const START_FROM = 0.3;
+const START_LIFTOFF = 0.5;
+const START_END = 0.75;
+const LAND_FROM = 0.15;
+const LAND_END = 0.8;
+
+/** 속도 → 서기 가중치와 GAITS 각 클립의 가중치 */
+function locoWeights(speed: number): { idle: number; gaits: number[] } {
+  const gaits = GAITS.map(() => 0);
+  const first = GAITS[0].at;
+  if (speed <= first) {
+    gaits[0] = speed / first;
+    return { idle: 1 - gaits[0], gaits };
+  }
+  for (let i = 1; i < GAITS.length; i++) {
+    const lo = GAITS[i - 1]!.at;
+    const hi = GAITS[i]!.at;
+    if (speed < hi) {
+      const t = (speed - lo) / (hi - lo);
+      gaits[i - 1] = 1 - t;
+      gaits[i] = t;
+      return { idle: 0, gaits };
+    }
+  }
+  gaits[GAITS.length - 1] = 1;
+  return { idle: 0, gaits };
+}
+
 /** 하체(이동·앉기) + 상체(낚시·들기) 두 레이어로 애니메이션을 섞는다 */
 class Rig {
   mixer: AnimationMixer;
   private actions = new Map<string, AnimationAction>();
-  private base: AnimationAction | null = null;
+  /** 하체 레이어 액션별 현재 가중치 (페이드 대신 직접 관리) */
+  private baseWeights = new Map<AnimationAction, number>();
   private upper: AnimationAction | null = null;
   private upperKey = '';
+  /** 걷기·달리기 공용 발 위상 (0~1, 0 = 왼발이 가장 앞) */
+  private phase = 0;
+  /** GAITS 순서대로 잰 보행 정보 */
+  private gaits: (Gait | null)[];
+  private scale: number;
 
   constructor(
     root: Object3D,
     private clips: Map<string, AnimationClip>,
   ) {
     this.mixer = new AnimationMixer(root);
+    this.scale = root.scale.x;
+    this.gaits = GAITS.map((g) => {
+      const clip = clips.get(g.clip);
+      return clip ? measureGait(root, clip) : null;
+    });
   }
 
   private action(name: string, variant: Variant): AnimationAction | null {
@@ -130,18 +196,99 @@ class Rig {
     if (cur) cur.fadeOut(fade);
   }
 
+  /** 한 주기(두 걸음)에 나아가는 거리 (m) */
+  private stride(g: Gait | null, clip: string): number {
+    const d = this.clips.get(clip)?.duration ?? 1;
+    return g ? g.speed * this.scale * d : 1;
+  }
+
+  private updateBase(state: AvatarState, spec: UpperSpec | null, layered: boolean, dt: number) {
+    const sitting = !!state.seat;
+    const speed = sitting ? 0 : state.speed;
+    const variant: Variant = layered ? 'lower' : 'full';
+    /** 액션 → 목표 가중치, 그리고 직접 정한 재생 위치(초) */
+    const targets = new Map<AnimationAction, { w: number; time?: number }>();
+    const add = (name: string, w: number, norm?: number) => {
+      const a = this.action(name, variant);
+      if (!a || w <= 0) return;
+      const prev = targets.get(a);
+      targets.set(a, { w: (prev?.w ?? 0) + w, time: norm === undefined ? undefined : norm * a.getClip().duration });
+    };
+
+    // 걷기·달리기는 같은 발 위상으로 맞춰 재생한다: 섞여도 발이 엇갈리지 않고,
+    // 위상이 실제 이동 거리만큼 나아가니 발이 땅에 붙어 보인다
+    const loco = locoWeights(speed);
+    let strideSum = 0;
+    let weightSum = 0;
+    GAITS.forEach((g, i) => {
+      strideSum += this.stride(this.gaits[i] ?? null, g.clip) * loco.gaits[i]!;
+      weightSum += loco.gaits[i]!;
+    });
+    const stride = weightSum > 0 ? strideSum / weightSum : this.stride(this.gaits[0] ?? null, GAITS[0].clip);
+    this.phase = (this.phase + (speed * dt) / stride) % 1;
+    const addLoco = (scale: number) => {
+      add(IDLE, loco.idle * scale);
+      GAITS.forEach((g, i) => {
+        const gait = this.gaits[i];
+        add(g.clip, loco.gaits[i]! * scale, gait ? (this.phase + gait.phase0) % 1 : undefined);
+      });
+    };
+
+    // 상체 클립이 전신으로 재생 중이면 하체는 비운다
+    if (!spec || layered) {
+      if (sitting) add('Sit_Chair_Idle', 1);
+      else if (state.jump === 'takeoff' || state.jump === 'air') {
+        // 이륙까지 START_FROM→START_LIFTOFF 를 JUMP.takeoff 초에 재생하고, 같은 빠르기로 공중 자세까지 이어 간다
+        const rate = (START_LIFTOFF - START_FROM) / JUMP.takeoff;
+        const startNorm =
+          state.jump === 'takeoff'
+            ? START_FROM + state.jumpTime * rate
+            : Math.min(START_END, START_LIFTOFF + state.jumpTime * rate);
+        const toIdle = state.jump === 'air' ? Math.min(1, state.jumpTime / 0.25) : 0;
+        add('Jump_Start', 1 - toIdle, startNorm);
+        add('Jump_Idle', toIdle);
+      } else if (state.jump === 'land') {
+        const dur = speed > 0.5 ? JUMP.landMoving : JUMP.land;
+        const norm = LAND_FROM + (LAND_END - LAND_FROM) * Math.min(1, state.jumpTime / dur);
+        // 이동 중 착지는 충격 자세를 반만 섞고 바로 뛰어 나간다
+        const w = speed > 0.5 ? 0.5 : 1;
+        add('Jump_Land', w, norm);
+        addLoco(1 - w);
+      } else addLoco(1);
+    }
+
+    const jumping = state.jump !== 'none';
+    const k = 1 - Math.exp(-(jumping ? JUMP_BLEND_RATE : BASE_BLEND_RATE) * dt);
+    const all = new Set([...this.baseWeights.keys(), ...targets.keys()]);
+    for (const a of all) {
+      const target = targets.get(a);
+      const cur = this.baseWeights.get(a) ?? 0;
+      const w = cur + ((target?.w ?? 0) - cur) * k;
+      if (!target && w < 0.002) {
+        a.stop();
+        this.baseWeights.delete(a);
+        continue;
+      }
+      if (!a.isRunning()) a.play();
+      a.setEffectiveWeight(w);
+      this.baseWeights.set(a, w);
+      // 위치를 직접 정하는 액션은 mixer 가 시간을 흘리지 않게 한다. 사라지는 중이면 마지막 자세 유지
+      if (target?.time !== undefined) {
+        a.timeScale = 0;
+        a.time = target.time;
+      } else if (!target && a.timeScale === 0) {
+        // 그대로 둔다
+      } else a.timeScale = 1;
+    }
+  }
+
   update(state: AvatarState, dt: number) {
     const sitting = !!state.seat;
-    const moving = !sitting && state.speed > 0;
+    const moving = !sitting && state.speed > MOVING_EPS;
     const spec = upperFor(state);
-    // 앉아 있거나 걷는 중이면 하체는 이동·앉기, 상체만 낚시·들기 동작
-    const layered = !!spec && (sitting || moving);
-
-    const baseName = sitting ? 'Sit_Chair_Idle' : state.speed > 5 ? 'Running_A' : moving ? 'Walking_A' : 'Idle_A';
-    const nextBase = spec && !layered ? null : this.action(baseName, layered ? 'lower' : 'full');
-    this.swap(this.base, nextBase, 0.25);
-    this.base = nextBase;
-    if (nextBase && moving) nextBase.timeScale = baseName === 'Running_A' ? state.speed / 6.8 : state.speed / 4.2;
+    // 앉아 있거나 걷거나 뛰는 중이면 하체는 이동·앉기·점프, 상체만 낚시·들기 동작
+    const layered = !!spec && (sitting || moving || state.jump !== 'none');
+    this.updateBase(state, spec, layered, dt);
 
     const variant: Variant = layered ? 'upper' : 'full';
     const key = spec ? `${spec.clip}:${variant}` : '';

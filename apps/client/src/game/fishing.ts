@@ -98,7 +98,7 @@ function holdAnchor(tier: CatchTier, out: Vector3): Vector3 {
   return out.set(player.pos.x + f.x * ahead, player.pos.y + y, player.pos.z + f.z * ahead);
 }
 
-const HOLD_PROMPT = 'Space 바구니에 넣기 · R 길게 눌러 던지기 · F 자랑하기';
+const HOLD_PROMPT = 'Q 바구니에 넣기 · R 길게 눌러 던지기 · F 자랑하기';
 
 export function cancelFishing() {
   fishing.bobberVisible = false;
@@ -310,9 +310,9 @@ export function stepFishing(dt: number) {
 
   switch (f.phase) {
     case 'idle': {
-      if (ui.dexOpen || player.held) return;
+      if (ui.dexOpen || player.held || player.jump !== 'none') return;
       const w = waterAhead(player.pos, player.yaw);
-      patchGame({ fishPrompt: w ? `Space를 길게 눌러 던지기 · ${WATER_LABEL[w]}` : null });
+      patchGame({ fishPrompt: w ? `Q를 길게 눌러 던지기 · ${WATER_LABEL[w]}` : null });
       if (input.wasPressed('fish')) {
         if (!w) {
           showToast('물가에서 물 쪽을 바라보고 던져 보세요');
@@ -383,7 +383,7 @@ export function stepFishing(dt: number) {
         f.biteAt = performance.now();
         pose('bite');
         go('bite');
-        patchGame({ fishPrompt: '지금! Space' });
+        patchGame({ fishPrompt: '지금! Q' });
       }
       return;
     }

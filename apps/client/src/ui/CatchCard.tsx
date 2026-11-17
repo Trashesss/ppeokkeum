@@ -21,7 +21,7 @@ export function CatchCard({ result, throwing }: { result: CatchResult; throwing:
       <p className="desc">{s.description}</p>
       <div className="card-actions">
         <button className="primary" disabled={throwing} onClick={stashHeld}>
-          바구니에 넣기 <kbd>Space</kbd>
+          바구니에 넣기 <kbd>Q</kbd>
         </button>
         <button
           className="ghost"
