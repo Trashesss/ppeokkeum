@@ -33,6 +33,16 @@ export function useClips(): Map<string, AnimationClip> {
   }, [gltfs]);
 }
 
+/** 어느 캐릭터든 숨기는 소품 (화살통은 낚시꾼 분위기에 맞지 않는다) */
+const HIDE_ALWAYS = ['Quiver'];
+/** 기사만 망토·투구를 유지하고, 나머지 캐릭터는 망토·모자·가면을 뺀다 */
+const HIDE_UNLESS_KNIGHT = ['Cape', 'Hat', 'Helmet', 'Mask'];
+
+function hiddenPart(id: CharacterId, meshName: string): boolean {
+  if (HIDE_ALWAYS.some((h) => meshName.includes(h))) return true;
+  return id !== 'Knight' && HIDE_UNLESS_KNIGHT.some((h) => meshName.includes(h));
+}
+
 /** 캐릭터 모델 복제본 (여러 명이 같은 모델을 써도 뼈대가 따로 움직이도록) */
 export function useCharacterModel(id: CharacterId): Object3D {
   const gltf = useLoader(GLTFLoader, characterUrl(id));
@@ -40,11 +50,10 @@ export function useCharacterModel(id: CharacterId): Object3D {
     const root = cloneSkinned(gltf.scene);
     root.traverse((o) => {
       o.castShadow = true;
-      // 무기 관련 소품(화살통)은 낚시꾼 분위기에 맞지 않아 숨긴다
-      if (o.name.includes('Quiver')) o.visible = false;
+      if (hiddenPart(id, o.name)) o.visible = false;
     });
     return root;
-  }, [gltf]);
+  }, [gltf, id]);
 }
 
 for (const url of [...ANIM_FILES, ...CHARACTERS.map(characterUrl)]) useLoader.preload(GLTFLoader, url);

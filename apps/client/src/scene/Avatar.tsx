@@ -39,6 +39,8 @@ interface Props {
 
 /** KayKit 캐릭터(약 2.2 단위)를 맵 비율(약 1.7m)에 맞춘다 */
 const SCALE = 0.78;
+/** 큰 머리 비율을 조금 줄인다 (머리 뼈 크기). 애니메이션이 덮어쓰지 않도록 매 프레임 적용 */
+const HEAD_SCALE = 0.85;
 const ROD_SEGS = [0.55, 0.55, 0.55, 0.55];
 const BEND_WEIGHT = [0.08, 0.18, 0.3, 0.44];
 /** 손잡이 끝이 손보다 조금 뒤에 오도록 */
@@ -344,6 +346,7 @@ function CharacterAvatar({ state, character, heldSpeciesId, name, rodTip }: Prop
       slotR: model.getObjectByName('handslotr'),
       handR: model.getObjectByName('handr'),
       handL: model.getObjectByName('handl'),
+      head: model.getObjectByName('head'),
     };
   }, [model]);
 
@@ -388,6 +391,7 @@ function CharacterAvatar({ state, character, heldSpeciesId, name, rodTip }: Prop
   useFrame((_, rawDt) => {
     const dt = Math.min(rawDt, 0.05);
     rig.update(state, dt);
+    bones.head?.scale.setScalar(HEAD_SCALE);
     const k = 1 - Math.exp(-10 * dt);
     model.position.y += ((state.seat ? SIT_LIFT : 0) - model.position.y) * k;
     model.position.z += ((state.seat ? SIT_FORWARD : 0) - model.position.z) * k;
